@@ -418,8 +418,8 @@ class Network(object):
                 logging.info('Deleting netbox interface {name} because not present locally '.format(
                     name=nic.name
                 ))
-                #nb_nics.remove(nic)
-                #nic.delete()
+                nb_nics.remove(nic)
+                nic.delete()
 
         # delete IP on netbox that are not known on this server
         if len(nb_nics):
@@ -438,7 +438,7 @@ class Network(object):
                         ip=netbox_ip.address, interface=netbox_ip.assigned_object))
                     netbox_ip.assigned_object_type = None
                     netbox_ip.assigned_object_id = None
-                    #netbox_ip.save()
+                    netbox_ip.save()
 
         # update each nic
         for nic in self.nics:
