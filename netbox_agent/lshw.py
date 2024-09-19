@@ -14,7 +14,13 @@ class LSHW():
         data = subprocess.getoutput(
             'lshw -quiet -json'
         )
-        json_data = json.loads(data)
+        # lshw version 02.18.85-0.7 has a bug that causes it to return wrong JSON
+        try:
+            json_data = json.loads(data)
+        except Exception as e:
+            logging.error("Error while trying to parse lshw output: %s", e)
+            sys.exit(1)
+
         # Starting from version 02.18, `lshw -json` wraps its result in a list
         # rather than returning directly a dictionary
         if isinstance(json_data, list):
@@ -105,32 +111,38 @@ class LSHW():
                     "description": device.get("description"),
                     "type": device.get("description"),
                 })
-        elif "nvme" in obj["configuration"]["driver"]:
-            if not is_tool('nvme'):
-                logging.error('nvme-cli >= 1.0 does not seem to be installed')
-                return
-            try:
-                nvme = json.loads(
-                    subprocess.check_output(
-                        ["nvme", '-list', '-o', 'json'],
-                        encoding='utf8')
-                )
-                for device in nvme["Devices"]:
-                    d = {
-                        'logicalname': device["DevicePath"],
-                        'product': device["ModelNumber"],
-                        'serial': device["SerialNumber"],
-                        "version": device["Firmware"],
-                        'description': "NVME",
-                        'type': "NVME",
-                    }
-                    if "UsedSize" in device:
-                        d['size'] = device["UsedSize"]
-                    if "UsedBytes" in device:
-                        d['size'] = device["UsedBytes"]
-                    self.disks.append(d)
-            except Exception:
-                pass
+        
+        if not is_tool('nvme'):
+            logging.error('nvme-cli >= 1.0 does not seem to be installed')
+            return
+        try:
+            logging.info("Trying to find NVME devices")
+            nvme = json.loads(
+                subprocess.check_output(
+                    ["nvme", '-list', '-o', 'json'],
+                    encoding='utf8')
+            )
+            num_devices = len(nvme["Devices"])
+            logging.info("Found %d NVME devices", num_devices)
+
+            for device in nvme["Devices"]:
+                logging.info("Found NVME device %s with serial %s and size %s", device["DevicePath"], device["SerialNumber"], device["PhysicalSize"])
+
+
+                d = {
+                    'logicalname': device["DevicePath"],
+                    'product': device["ModelNumber"],
+                    'serial': device["SerialNumber"],
+                    "version": device["Firmware"],
+                    'description': "NVME",
+                    'type': "NVME",
+                    'size': device["PhysicalSize"]
+                }
+                
+                self.disks.append(d)
+        except Exception as e:
+            logging.error("Error while trying to find NVME devices: %s", e)
+            pass
 
     def find_cpus(self, obj):
         if "product" in obj:
@@ -181,7 +193,9 @@ class LSHW():
             if "children" in bus:
                 for b in bus["children"]:
                     if b["class"] == "storage":
+                        logging.info("found storage")
                         self.find_storage(b)
+
                     if b["class"] == "network":
                         self.find_network(b)
                     if b["class"] == "display":

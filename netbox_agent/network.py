@@ -1,4 +1,5 @@
 import logging
+import sys
 import os
 import re
 from itertools import chain
@@ -103,9 +104,13 @@ class Network(object):
                 '/sys/class/net/{}/tun_flags'.format(interface)
             )
 
+            def is_valid_mac_address(mac):
+                # Function to check if a MAC address is valid
+                return len(mac.split(':')) == 6 and all(len(part) == 2 and part.isalnum() for part in mac.split(':'))
+
             nic = {
                 'name': interface,
-                'mac': mac if mac != '00:00:00:00:00:00' else None,
+                'mac': mac if is_valid_mac_address(mac) and mac != '00:00:00:00:00:00' else None,
                 'ip': [
                     '{}/{}'.format(
                         x['addr'],
@@ -154,10 +159,11 @@ class Network(object):
             )
         else:
             interface = self.nb_net.interfaces.get(
-                mac_address=nic['mac'],
+                #mac_address=nic['mac'],
                 name=nic['name'],
                 **self.custom_arg_id
             )
+        
         return interface
 
     def get_netbox_network_cards(self):
@@ -213,7 +219,7 @@ class Network(object):
     def reset_vlan_on_interface(self, nic, interface):
         update = False
         vlan_id = nic['vlan']
-        lldp_vlan = self.lldp.get_switch_vlan(nic['name']) if config.network.lldp else None
+        lldp_vlan = self.lldp.get_switch_vlan(nic['name']) if config.network.lldp and isinstance(self, ServerNetwork) else None
         # For strange reason, we need to get the object from scratch
         # The object returned by pynetbox's save isn't always working (since pynetbox 6)
         interface = self.nb_net.interfaces.get(id=interface.id)
@@ -247,7 +253,7 @@ class Network(object):
             interface.untagged_vlan = None
         # Finally if LLDP reports a vlan-id with the pvid attribute
         elif lldp_vlan:
-            pvid_vlan = [key for (key, value) in lldp_vlan.items() if value['pvid']]
+            pvid_vlan = [key for (key, value) in lldp_vlan.items() if 'pvid' in value and value['pvid']]
             if len(pvid_vlan) > 0 and (
                     interface.mode is None or
                     interface.mode.value != self.dcim_choices['interface:mode']['Access'] or
@@ -301,7 +307,7 @@ class Network(object):
             interface.save()
 
         # cable the interface
-        if config.network.lldp:
+        if config.network.lldp and isinstance(self, ServerNetwork):
             switch_ip = self.lldp.get_switch_ip(interface.name)
             switch_interface = self.lldp.get_switch_port(interface.name)
 
@@ -326,6 +332,8 @@ class Network(object):
         * If IP exists and isn't assigned, take it
         * If IP exists and interface is wrong, change interface
         '''
+
+        
         netbox_ips = nb.ipam.ip_addresses.filter(
             address=ip,
         )
@@ -345,6 +353,7 @@ class Network(object):
             return netbox_ip
 
         netbox_ip = list(netbox_ips)[0]
+
         # If IP exists in anycast
         if netbox_ip.role and netbox_ip.role.label == 'Anycast':
             logging.debug('IP {} is Anycast..'.format(ip))
@@ -371,6 +380,7 @@ class Network(object):
                 netbox_ip = nb.ipam.ip_addresses.create(**query_params)
             return netbox_ip
         else:
+            
             ip_interface = getattr(netbox_ip, 'interface', None)
             assigned_object = getattr(netbox_ip, 'assigned_object', None)
             if not ip_interface or not assigned_object:
@@ -405,11 +415,11 @@ class Network(object):
         local_nics = [x['name'] for x in self.nics]
         for nic in nb_nics:
             if nic.name not in local_nics:
-                logging.info('Deleting netbox interface {name} because not present locally'.format(
+                logging.info('Deleting netbox interface {name} because not present locally '.format(
                     name=nic.name
                 ))
-                nb_nics.remove(nic)
-                nic.delete()
+                #nb_nics.remove(nic)
+                #nic.delete()
 
         # delete IP on netbox that are not known on this server
         if len(nb_nics):
@@ -418,6 +428,7 @@ class Network(object):
             )
 
             netbox_ips = list(netbox_ips)
+            
             all_local_ips = list(chain.from_iterable([
                 x['ip'] for x in self.nics if x['ip'] is not None
             ]))
@@ -427,7 +438,7 @@ class Network(object):
                         ip=netbox_ip.address, interface=netbox_ip.assigned_object))
                     netbox_ip.assigned_object_type = None
                     netbox_ip.assigned_object_id = None
-                    netbox_ip.save()
+                    #netbox_ip.save()
 
         # update each nic
         for nic in self.nics:
@@ -444,7 +455,13 @@ class Network(object):
                     interface=interface, name=nic['name']))
                 interface.name = nic['name']
                 nic_update += 1
-
+            
+            if nic['mac'] != interface.mac_address:
+                logging.info('Updating interface {interface} mac_address to: {mac}'.format(
+                    interface=interface, mac=nic['mac']))
+                interface.mac_address = nic['mac']
+                nic_update += 1
+            
             ret, interface = self.reset_vlan_on_interface(nic, interface)
             nic_update += ret
 
@@ -473,7 +490,7 @@ class Network(object):
                     interface.lag = None
 
             # cable the interface
-            if config.network.lldp:
+            if config.network.lldp and isinstance(self, ServerNetwork):
                 switch_ip = self.lldp.get_switch_ip(interface.name)
                 switch_interface = self.lldp.get_switch_port(interface.name)
                 if switch_ip and switch_interface:
@@ -543,10 +560,15 @@ class ServerNetwork(Network):
             return nb_server_interface
 
         switch_interface = self.lldp.get_switch_port(nb_server_interface.name)
-        nb_switch_interface = nb.dcim.interfaces.get(
-            device=nb_switch,
-            name=switch_interface,
-        )
+        try:
+                nb_switch_interface = nb.dcim.interfaces.get(
+                device_id=nb_switch.id,
+                name=switch_interface,
+            )
+        except Exception as e:
+            logging.error('There was an error retreiving the switch interface: {}'.format(e))
+            sys.exit()
+
         if nb_switch_interface is None:
             logging.error('Switch interface {} cannot be found'.format(switch_interface))
             return nb_server_interface
@@ -556,12 +578,20 @@ class ServerNetwork(Network):
             switch_ip,
         ))
         cable = nb.dcim.cables.create(
-            termination_a_id=nb_server_interface.id,
-            termination_a_type="dcim.interface",
-            termination_b_id=nb_switch_interface.id,
-            termination_b_type="dcim.interface",
+            a_terminations=[
+                {
+                    'object_id': nb_server_interface.id,
+                    'object_type':'dcim.interface'
+                }
+            ],
+            b_terminations=[
+                {
+                    'object_id': nb_switch_interface.id,
+                    'object_type': 'dcim.interface'
+                }
+            ],
         )
-        nb_server_interface.cable = cable
+        
         logging.info(
             'Connected interface {interface} with {switch_interface} of {switch_ip}'.format(
                 interface=nb_server_interface.name,
@@ -575,11 +605,13 @@ class ServerNetwork(Network):
         update = False
         if nb_server_interface.cable is None:
             update = True
+            logging.debug(f"Found {switch_ip} needing to be connected from {switch_interface} to {nb_server_interface}")
+
             nb_server_interface = self.connect_interface_to_switch(
                 switch_ip, switch_interface, nb_server_interface
             )
         else:
-            nb_sw_int = nb_server_interface.cable.termination_b
+            nb_sw_int = nb_server_interface.cable.b_terminations[0]
             nb_sw = nb_sw_int.device
             nb_mgmt_int = nb.dcim.interfaces.get(
                 device_id=nb_sw.id,

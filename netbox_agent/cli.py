@@ -8,6 +8,7 @@ from netbox_agent.vendors.generic import GenericHost
 from netbox_agent.vendors.hp import HPHost
 from netbox_agent.vendors.qct import QCTHost
 from netbox_agent.vendors.supermicro import SupermicroHost
+from netbox_agent.vendors.hetzner import HetznerHost
 from netbox_agent.virtualmachine import VirtualMachine, is_vm
 
 MANUFACTURERS = {
@@ -17,6 +18,9 @@ MANUFACTURERS = {
     'Supermicro': SupermicroHost,
     'Quanta Cloud Technology Inc.': QCTHost,
     'Generic': GenericHost,
+    'To Be Filled By O.E.M.': HetznerHost,
+    'System Serial Number': HetznerHost,
+    'Default string': HetznerHost,
 }
 
 
@@ -29,13 +33,14 @@ def run(config):
         server = VirtualMachine(dmi=dmi)
     else:
         manufacturer = dmidecode.get_by_type(dmi, 'Chassis')[0].get('Manufacturer')
+        logging.info("Found manufacturer: %s" % manufacturer)
         try:
             server = MANUFACTURERS[manufacturer](dmi=dmi)
         except KeyError:
             server = GenericHost(dmi=dmi)
 
     if version.parse(nb.version) < version.parse('2.9'):
-        print('netbox-agent is not compatible with Netbox prior to verison 2.9')
+        logging.error('netbox-agent is not compatible with Netbox prior to verison 2.9')
         return False
 
     if config.register or config.update_all or config.update_network or \

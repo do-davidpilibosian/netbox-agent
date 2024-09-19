@@ -37,13 +37,21 @@ class IPMI():
     """
 
     def __init__(self):
-        self.ret, self.output = subprocess.getstatusoutput('ipmitool lan print')
-        if self.ret != 0:
-            logging.error('Cannot get ipmi info: {}'.format(self.output))
+        result = subprocess.run(['ipmitool', 'lan', 'print'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.ret = result.returncode
+        self.output = result.stdout.decode('utf-8')
+        self.error_output = result.stderr.decode('utf-8')
+        
+        if self.ret != 0 and "IP Address" not in self.output:
+            logging.info("Returned error code and IP Address not defined")
+            logging.info('Cannot get ipmi info: {}'.format(self.error_output))
+        else:
+            logging.info('IPMI info retrieved successfully')
+            logging.info(self.output)
 
     def parse(self):
         _ipmi = {}
-        if self.ret != 0:
+        if self.ret != 0 and "IP Address" not in self.output:
             return _ipmi
 
         for line in self.output.splitlines():
@@ -58,8 +66,13 @@ class IPMI():
         ret["mtu"] = 1500
         ret['bonding'] = False
         ret['mac'] = _ipmi['MAC Address']
-        ret['vlan'] = int(_ipmi['802.1q VLAN ID']) \
-            if _ipmi['802.1q VLAN ID'] != 'Disabled' else None
+        if 'vlan' not in _ipmi:
+            ret['vlan'] = None
+
+        if '802.1q VLAN ID' in _ipmi:
+            ret['vlan'] = int(_ipmi['802.1q VLAN ID']) \
+                if _ipmi['802.1q VLAN ID'] != 'Disabled' else None
+            
         ip = _ipmi['IP Address']
         netmask = _ipmi['Subnet Mask']
         address = str(IPNetwork('{}/{}'.format(ip, netmask)))

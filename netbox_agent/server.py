@@ -3,7 +3,7 @@ from netbox_agent.config import config
 from netbox_agent.config import netbox_instance as nb
 from netbox_agent.inventory import Inventory
 from netbox_agent.location import Datacenter, Rack, Tenant
-from netbox_agent.misc import create_netbox_tags, get_device_role, get_device_type, get_device_platform
+from netbox_agent.misc import create_netbox_tags, get_device_role, get_device_type, get_device_platform, verify_serial
 from netbox_agent.network import ServerNetwork
 from netbox_agent.power import PowerSupply
 from pprint import pprint
@@ -139,13 +139,20 @@ class ServerBase():
         """
         Return the Chassis Name from dmidecode info
         """
+
+        if self.system[0]['Product Name'].strip() == ' ' or self.system[0]['Product Name'].strip() == '':
+            return 'Generic Server'
+
         return self.system[0]['Product Name'].strip()
 
     def get_service_tag(self):
         """
         Return the Service Tag from dmidecode info
         """
-        return self.system[0]['Serial Number'].strip()
+        if verify_serial(self.system[0]['Serial Number'].strip()):
+            return self.system[0]['Serial Number'].strip()
+        
+        return self.get_hostname()
 
     def get_expansion_service_tag(self):
         """
@@ -199,7 +206,7 @@ class ServerBase():
             name=self.get_chassis_name(),
             device_type=device_type.id,
             serial=serial,
-            device_role=device_role.id,
+            role=device_role.id,
             site=datacenter.id if datacenter else None,
             tenant=tenant.id if tenant else None,
             rack=rack.id if rack else None,
@@ -220,7 +227,7 @@ class ServerBase():
         new_blade = nb.dcim.devices.create(
             name=hostname,
             serial=serial,
-            device_role=device_role.id,
+            role=device_role.id,
             device_type=device_type.id,
             parent_device=chassis.id,
             site=datacenter.id if datacenter else None,
@@ -243,7 +250,7 @@ class ServerBase():
         new_blade = nb.dcim.devices.create(
             name=hostname,
             serial=serial,
-            device_role=device_role.id,
+            role=device_role.id,
             device_type=device_type.id,
             parent_device=chassis.id,
             site=datacenter.id if datacenter else None,
@@ -272,7 +279,7 @@ class ServerBase():
         new_server = nb.dcim.devices.create(
             name=hostname,
             serial=serial,
-            device_role=device_role.id,
+            role=device_role.id,
             device_type=device_type.id,
             platform=self.device_platform.id,
             site=datacenter.id if datacenter else None,
@@ -284,10 +291,28 @@ class ServerBase():
 
     def get_netbox_server(self, expansion=False):
         if expansion is False:
-            return nb.dcim.devices.get(serial=self.get_service_tag())
+
+            if self.get_service_tag() and self.get_service_tag() != "":
+                logging.info("Getting server with servicetag!")
+                logging.info("Servicetag: " + self.get_service_tag())
+
+                server = nb.dcim.devices.get(serial=self.get_service_tag())
+
+                if not server:
+                    logging.info("no server found, checking again with hostname!")
+                    server = nb.dcim.devices.get(name=self.get_service_tag())
+                    if not server:
+                        logging.error("No server found by serial or hostname")
+                        sys.exit()
+                    logging.info("Server found, keep going!")
+
+                return server
+            else:
+                logging.info("Getting server with hostname!")
+                return nb.dcim.devices.get(name=self.get_hostname())
         else:
             return nb.dcim.devices.get(serial=self.get_expansion_service_tag())
-
+        
     def _netbox_set_or_update_blade_slot(self, server, chassis, datacenter):
         # before everything check if right chassis
         actual_device_bay = server.parent_device.device_bay \
@@ -395,16 +420,36 @@ class ServerBase():
             if not chassis:
                 chassis = self._netbox_create_chassis(datacenter, tenant, rack)
 
+            logging.info("Find blade server with servicetag: {}".format(self.get_service_tag()))
             server = nb.dcim.devices.get(serial=self.get_service_tag())
+
+
             if not server:
-                server = self._netbox_create_blade(chassis, datacenter, tenant, rack)
+                server = nb.dcim.devices.get(name=self.get_service_tag(), tenant=tenant)
+                
+                if not server:
+                    server = self._netbox_create_blade(chassis, datacenter, tenant, rack)
 
             # Set slot for blade
             self._netbox_set_or_update_blade_slot(server, chassis, datacenter)
         else:
-            server = nb.dcim.devices.get(serial=self.get_service_tag())
+            
+            logging.info("Find server with servicetag: {}".format(self.get_service_tag()))
+            
+            if self.get_service_tag() and self.get_service_tag() != "":
+                server = nb.dcim.devices.get(serial=self.get_service_tag())
+                
+                if not server:
+                    logging.info("Server not found, checking with hostname " + self.get_hostname())
+                    server = nb.dcim.devices.get(name=self.get_hostname())
+                    logging.info("Found server with hostname: {}".format(self.get_hostname()))
+            else:
+                server = nb.dcim.devices.get(name=self.get_hostname())
+                logging.info("Found server with hostname: {}".format(self.get_hostname()))
+            
             if not server:
                 server = self._netbox_create_server(datacenter, tenant, rack)
+        
 
         logging.debug('Updating Server...')
         # check network cards
@@ -459,6 +504,10 @@ class ServerBase():
 
         if server.custom_fields != self.custom_fields:
             server.custom_fields = self.custom_fields
+            update += 1
+        
+        if server.serial == "":
+            server.serial = self.get_service_tag()
             update += 1
 
         if config.update_all or config.update_location:
