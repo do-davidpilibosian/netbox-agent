@@ -41,7 +41,7 @@ The goal is to generate an existing infrastructure on Netbox and have the abilit
 # Installation
 
 ```
-# pip3 install netbox-agent
+# pip3 install git+https://github.com/do-davidpilibosian/netbox-agent
 ```
 
 # Usage
