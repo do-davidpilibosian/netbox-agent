@@ -1,5 +1,5 @@
 pynetbox==7.4.0
-netaddr
+netaddr==0.10.1
 netifaces
 pyyaml>=6.0.0
 jsonargparse
